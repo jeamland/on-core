@@ -8,6 +8,7 @@ describe('Lookup Service', function () {
         MacAddress,
         Errors,
         WaterlineService,
+        child_process,
         sandbox = sinon.sandbox.create();
 
     var lookup = [{
@@ -53,6 +54,7 @@ describe('Lookup Service', function () {
         WaterlineService = helper.injector.get('Services.Waterline');
         MacAddress = helper.injector.get('MacAddress');
         Errors = helper.injector.get('Errors');
+        child_process = helper.injector.get('child_process');
 
         // Mock out the waterline collection methods and initialize them
         var config = {
@@ -131,6 +133,11 @@ describe('Lookup Service', function () {
           lookupService.resetNodeIdCache();
         });
 
+        afterEach(function () {
+          var configuration = helper.injector.get('Services.Configuration');
+          configuration.set('externalLookupHelper', null);
+        })
+
         it('should call findByTerm with macAddress', function() {
             var findByTerm = this.sandbox.stub(
                     WaterlineService.lookups, 'findByTerm').resolves(lookup);
@@ -149,6 +156,67 @@ describe('Lookup Service', function () {
                 lookupService.macAddressToNodeId('00:11:22:33:44:55')
             ).to.be.rejectedWith(Errors.NotFoundError).then(function () {
                 expect(findByTerm).to.have.been.calledWith('00:11:22:33:44:55');
+            });
+        });
+
+        it('should run helper script if no lookup record exists', function() {
+            var helperPath = 'some-magic-script';
+            var macAddress = '00:11:22:33:44:55'
+            var findByTerm = this.sandbox.stub(
+                    WaterlineService.lookups, 'findByTerm').resolves();
+            var runExternalHelper = this.sandbox.stub(
+                    lookupService, 'runExternalHelper').resolves();
+            var configuration = helper.injector.get('Services.Configuration');
+            configuration.set('externalLookupHelper', helperPath);
+
+            expect(
+                lookupService.macAddressToNodeId(macAddress)
+            ).to.be.rejectedWith(Errors.NotFoundError).then(function () {
+                expect(findByTerm).to.have.been.calledWith(macAddress);
+                expect(runExternalHelper).to.have.been.calledWith(helperPath, macAddress);
+            });
+        });
+
+        it('use helper script output to fill in associations', function() {
+            var helperPath = 'some-magic-script';
+            var macAddress = lookup[0].macAddress;
+            var ipAddress = lookup[0].ipAddress;
+            var findByTerm = this.sandbox.stub(WaterlineService.lookups, 'findByTerm')
+            findByTerm.onCall(0).resolves();
+            findByTerm.onCall(1).resolves(lookup);
+            var setIp = this.sandbox.stub(
+                    WaterlineService.lookups, 'setIp').resolves();
+            var configuration = helper.injector.get('Services.Configuration');
+            configuration.set('externalLookupHelper', helperPath);
+
+            var FakeHelper = function () {
+                this.funcs = {
+                    stdout: {}
+                };
+
+                this.on = function (name, func) {
+                    this.funcs[name] = func;
+                }
+
+                this.stdout = {
+                    on: function(name, func) {
+                        this.funcs.stdout[name] = func;
+                    }.bind(this)
+                }
+
+                return true;
+            }
+
+            var external = new FakeHelper();
+            var spawn = this.sandbox.stub(child_process, 'spawn').returns(external);
+
+            return lookupService.macAddressToNodeId(macAddress).then(function (result) {
+                expect(result).to.equal(lookup[0].node);
+                expect(findByTerm).to.have.been.calledWith(macAddress);
+                expect(spawn).to.have.been.called;
+                external.funcs.stdout.data(macAddress + ' ' + ipAddress + '\n');
+                external.funcs.close(0);
+                expect(setIp).to.have.been.calledWith(ipAddress, macAddress);
             });
         });
 
