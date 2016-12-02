@@ -8,7 +8,7 @@ describe('Lookup Service', function () {
         MacAddress,
         Errors,
         WaterlineService,
-        child_process,
+        ChildProcess,
         sandbox = sinon.sandbox.create();
 
     var lookup = [{
@@ -43,9 +43,17 @@ describe('Lookup Service', function () {
         context.arpCache = {
             getCurrent: sandbox.stub().resolves()
         };
+        context.ChildProcess = function () {
+            this.run = sandbox.stub().resolves({
+                stdout: context.ChildProcess.stdout
+            });
+        };
+        context.ChildProcess.stdout = '';
+
         return [
             helper.di.simpleWrapper(context.Core, 'Services.Core'),
-            helper.di.simpleWrapper(context.arpCache, 'ARPCache')
+            helper.di.simpleWrapper(context.arpCache, 'ARPCache'),
+            helper.di.simpleWrapper(context.ChildProcess, 'ChildProcess')
         ];
     });
 
@@ -54,7 +62,7 @@ describe('Lookup Service', function () {
         WaterlineService = helper.injector.get('Services.Waterline');
         MacAddress = helper.injector.get('MacAddress');
         Errors = helper.injector.get('Errors');
-        child_process = helper.injector.get('child_process');
+        ChildProcess = helper.injector.get('ChildProcess');
 
         // Mock out the waterline collection methods and initialize them
         var config = {
@@ -189,33 +197,11 @@ describe('Lookup Service', function () {
             var configuration = helper.injector.get('Services.Configuration');
             configuration.set('externalLookupHelper', helperPath);
 
-            var FakeHelper = function () {
-                this.funcs = {
-                    stdout: {}
-                };
-
-                this.on = function (name, func) {
-                    this.funcs[name] = func;
-                }
-
-                this.stdout = {
-                    on: function(name, func) {
-                        this.funcs.stdout[name] = func;
-                    }.bind(this)
-                }
-
-                return true;
-            }
-
-            var external = new FakeHelper();
-            var spawn = this.sandbox.stub(child_process, 'spawn').returns(external);
+            ChildProcess.stdout = macAddress + ' ' + ipAddress + '\n';
 
             return lookupService.macAddressToNodeId(macAddress).then(function (result) {
                 expect(result).to.equal(lookup[0].node);
                 expect(findByTerm).to.have.been.calledWith(macAddress);
-                expect(spawn).to.have.been.called;
-                external.funcs.stdout.data(macAddress + ' ' + ipAddress + '\n');
-                external.funcs.close(0);
                 expect(setIp).to.have.been.calledWith(ipAddress, macAddress);
             });
         });
