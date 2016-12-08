@@ -43,17 +43,10 @@ describe('Lookup Service', function () {
         context.arpCache = {
             getCurrent: sandbox.stub().resolves()
         };
-        context.ChildProcess = function () {
-            this.run = sandbox.stub().resolves({
-                stdout: context.ChildProcess.stdout
-            });
-        };
-        context.ChildProcess.stdout = '';
 
         return [
             helper.di.simpleWrapper(context.Core, 'Services.Core'),
-            helper.di.simpleWrapper(context.arpCache, 'ARPCache'),
-            helper.di.simpleWrapper(context.ChildProcess, 'ChildProcess')
+            helper.di.simpleWrapper(context.arpCache, 'ARPCache')
         ];
     });
 
@@ -62,7 +55,6 @@ describe('Lookup Service', function () {
         WaterlineService = helper.injector.get('Services.Waterline');
         MacAddress = helper.injector.get('MacAddress');
         Errors = helper.injector.get('Errors');
-        ChildProcess = helper.injector.get('ChildProcess');
 
         // Mock out the waterline collection methods and initialize them
         var config = {
@@ -139,6 +131,7 @@ describe('Lookup Service', function () {
     describe('macAddressToNodeId', function () {
         beforeEach(function () {
           lookupService.resetNodeIdCache();
+          lookupService.resetMacRequests();
         });
 
         afterEach(function () {
@@ -189,21 +182,54 @@ describe('Lookup Service', function () {
             var helperPath = 'some-magic-script';
             var macAddress = lookup[0].macAddress;
             var ipAddress = lookup[0].ipAddress;
-            var findByTerm = this.sandbox.stub(WaterlineService.lookups, 'findByTerm')
+            var findByTerm = this.sandbox.stub(WaterlineService.lookups, 'findByTerm');
             findByTerm.onCall(0).resolves();
             findByTerm.onCall(1).resolves(lookup);
             var setIp = this.sandbox.stub(
                     WaterlineService.lookups, 'setIp').resolves();
             var configuration = helper.injector.get('Services.Configuration');
             configuration.set('externalLookupHelper', helperPath);
+            lookupService.resetMacRequests();
 
-            ChildProcess.stdout = macAddress + ' ' + ipAddress + '\n';
+            var fakeHelper = {
+                run: this.sandbox.stub().resolves({
+                    stdout: macAddress + ' ' + ipAddress + '\n'
+                })
+            };
+            var runExternalHelper = this.sandbox.stub(lookupService, 'runExternalHelper', function () {
+                return this.processHelperResults(fakeHelper);
+            });
 
             return lookupService.macAddressToNodeId(macAddress).then(function (result) {
                 expect(result).to.equal(lookup[0].node);
                 expect(findByTerm).to.have.been.calledWith(macAddress);
+                expect(runExternalHelper).to.have.been.calledWith(helperPath, macAddress);
                 expect(setIp).to.have.been.calledWith(ipAddress, macAddress);
+                expect(findByTerm).to.have.been.calledWith(macAddress);
             });
+        });
+
+        it('should only run the helper once per missing MAC address', function () {
+            var helperPath = 'some-magic-script';
+            var macAddress = lookup[0].macAddress;
+
+            ChildProcess = helper.injector.get('ChildProcess');
+            this.sandbox.stub(ChildProcess.prototype, '_parseCommandPath').returns(helperPath);
+
+            var processHelperResults = this.sandbox.stub(lookupService, 'processHelperResults').resolves();
+
+            var configuration = helper.injector.get('Services.Configuration');
+            configuration.set('externalLookupHelper', helperPath);
+            lookupService.resetMacRequests();
+
+            var runs = [];
+            for (var i = 0; i < 5; i++) {
+                runs.push(lookupService.runExternalHelper(helperPath, macAddress));
+            }
+
+            expect(processHelperResults).to.have.been.calledOnce;
+
+            return Promise.all(runs)
         });
 
         it('should reject with NotFoundError if no node association exists', function() {
